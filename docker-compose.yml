@@ -1,0 +1,73 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.0
+    container_name: siem-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -qE 'green|yellow'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.0
+    container_name: siem-setup
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - KIBANA_PASSWORD=${KIBANA_PASSWORD}
+    command: >
+      bash -c 'curl -s -X POST -u elastic:$$ELASTIC_PASSWORD
+      -H "Content-Type: application/json"
+      http://elasticsearch:9200/_security/user/kibana_system/_password
+      -d "{\"password\":\"$$KIBANA_PASSWORD\"}"'
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.0
+    container_name: siem-kibana
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_KEY_SECURITY}
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_KEY_SAVEDOBJ}
+      - XPACK_REPORTING_ENCRYPTIONKEY=${KIBANA_KEY_REPORTING}
+    ports:
+      - "127.0.0.1:5601:5601"
+    mem_limit: 1536m
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.19.0
+    container_name: siem-filebeat
+    user: root
+    command: ["-e", "--strict.perms=false"]
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ./logs:/var/log/siem:ro
+      - filebeatdata:/usr/share/filebeat/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    mem_limit: 256m
+
+volumes:
+  esdata:
+  filebeatdata:
